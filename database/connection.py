@@ -11,6 +11,15 @@ def get_local_db_config(config_path: str) -> dict:
     db_config['autocommit'] = True
     return db_config
 
+def get_replication_config(config_path: str) -> dict:
+    config = configparser.ConfigParser()
+    config.read(config_path)
+    try:
+        max_blocks = config.getint('replication', 'max_blocks_per_batch')
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        max_blocks = 10
+    return {'max_blocks_per_batch': max_blocks}
+
 async def create_db_pool(config: dict) -> aiomysql.Pool:
     """Crea y retorna un pool de conexiones."""
     return await aiomysql.create_pool(**config)
@@ -59,16 +68,16 @@ async def get_excepted_tables(pool: aiomysql.Pool, target_id: int) -> set:
             await cursor.execute("SELECT tabla FROM tablas_exceptuadas_sucursal WHERE id_sucursal = %s", (target_id,))
             return {row['tabla'] for row in await cursor.fetchall()}
 
-async def verify_binlog_config(pool: aiomysql.Pool, db_name: str) -> None:
+async def verify_binlog_config(pool: aiomysql.Pool, db_name: str, host_ip: str) -> None:
     """Verifica que el binlog esté activo y en formato ROW."""
     async with pool.acquire() as conn:
         async with conn.cursor(aiomysql.DictCursor) as cursor:
             await cursor.execute("SHOW VARIABLES LIKE 'log_bin'")
             log_bin = await cursor.fetchone()
             if not log_bin or log_bin['Value'].upper() != 'ON':
-                raise Exception(f"Error crítico: El binlog (log_bin) NO está activado en {db_name}.")
+                raise Exception(f"Error crítico: El binlog (log_bin) NO está activado en {db_name} (IP: {host_ip}).")
             
             await cursor.execute("SHOW VARIABLES LIKE 'binlog_format'")
             binlog_format = await cursor.fetchone()
             if not binlog_format or binlog_format['Value'].upper() != 'ROW':
-                raise Exception(f"Error crítico: El binlog_format en {db_name} debe ser ROW. Actual: {binlog_format['Value'] if binlog_format else 'Desconocido'}.")
+                raise Exception(f"Error crítico: El binlog_format en {db_name} (IP: {host_ip}) debe ser ROW. Actual: {binlog_format['Value'] if binlog_format else 'Desconocido'}.")

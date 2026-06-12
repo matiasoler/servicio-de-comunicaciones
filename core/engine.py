@@ -13,7 +13,7 @@ from core.state import shared_state
 from core.buffer import TransactionBuffer, TransactionBlock
 
 class ReplicationEngine:
-    def __init__(self, name: str, source_pool: aiomysql.Pool, dest_pool: aiomysql.Pool, excepted_tables: set, state_key: str, get_start_pos_callback, update_logs_callback, server_id: int):
+    def __init__(self, name: str, source_pool: aiomysql.Pool, dest_pool: aiomysql.Pool, excepted_tables: set, state_key: str, get_start_pos_callback, update_logs_callback, server_id: int, max_blocks_per_batch: int = 10):
         self.name = name
         self.source_pool = source_pool
         self.dest_pool = dest_pool
@@ -22,6 +22,7 @@ class ReplicationEngine:
         self.get_start_pos_callback = get_start_pos_callback
         self.update_logs_callback = update_logs_callback
         self.server_id = server_id
+        self.max_blocks_per_batch = max_blocks_per_batch
         self.running = True
 
     def _build_mysql_settings_from_pool(self, pool: aiomysql.Pool) -> dict:
@@ -61,7 +62,7 @@ class ReplicationEngine:
                 )
 
                 loop = asyncio.get_running_loop()
-                buffer = TransactionBuffer(max_blocks_per_batch=10) # TODO: Leer de config.ini
+                buffer = TransactionBuffer(max_blocks_per_batch=self.max_blocks_per_batch)
 
                 while self.running:
                     # Lectura asíncrona (el recepcionista esperando el paquete)

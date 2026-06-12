@@ -6,7 +6,7 @@ from core.state import shared_state
 from core.engine import ReplicationEngine
 from api.routes import create_app
 from database.connection import (
-    get_local_db_config, create_db_pool, 
+    get_local_db_config, get_replication_config, create_db_pool, 
     discover_identity, discover_central, get_excepted_tables,
     verify_binlog_config
 )
@@ -73,12 +73,17 @@ async def update_vuelta_logs(new_pos, new_file, source_pool, dest_pool):
 async def main():
     print("--- Iniciando Servicio de Replicación (Arquitectura Modular) ---")
     
+    # 0. Leer configuración de replicación
+    rep_config = get_replication_config('Codigo/config.ini')
+    max_blocks = rep_config['max_blocks_per_batch']
+    print(f"-> Configuración de replicación: Max {max_blocks} bloques por lote.")
+    
     # 1. Conexión Local y Descubrimiento
     local_config = get_local_db_config('Codigo/config.ini')
     local_pool = await create_db_pool(local_config)
     
     try:
-        await verify_binlog_config(local_pool, "LOCAL")
+        await verify_binlog_config(local_pool, "LOCAL", local_config.get('host', 'localhost'))
         print("-> Check: Binlog local activado y en formato ROW.")
 
         my_id = await discover_identity(local_pool)
@@ -101,7 +106,7 @@ async def main():
     try:
         central_pool = await create_db_pool(central_config)
         
-        await verify_binlog_config(central_pool, "CENTRAL")
+        await verify_binlog_config(central_pool, "CENTRAL", central_config.get('host', 'localhost'))
         print("-> Check: Binlog central activado y en formato ROW.")
 
         inbound_exceptions = await get_excepted_tables(central_pool, my_id)
@@ -123,7 +128,8 @@ async def main():
         state_key="outbound_status",
         get_start_pos_callback=get_ida_start_pos,
         update_logs_callback=update_ida_logs,
-        server_id=my_id + 1000
+        server_id=my_id + 1000,
+        max_blocks_per_batch=max_blocks
     )
     
     vuelta_engine = ReplicationEngine(
@@ -134,7 +140,8 @@ async def main():
         state_key="inbound_status",
         get_start_pos_callback=get_vuelta_start_pos,
         update_logs_callback=update_vuelta_logs,
-        server_id=central_id + 2000
+        server_id=central_id + 2000,
+        max_blocks_per_batch=max_blocks
     )
 
     # 4. Levantar la API de Monitoreo
