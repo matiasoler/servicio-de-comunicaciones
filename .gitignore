@@ -1,0 +1,24 @@
+# Entornos virtuales
+venv/
+env/
+.env
+.env.*
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos del sistema operativo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Backups y bases de datos grandes
+Base de Datos/zafirobk_*.sql
+Base de Datos/zafirobk_*.sql.gz
+*.sql.gz

@@ -1,0 +1,13 @@
+# Dependencias para el agente de comunicaciones
+
+# Para realizar consultas asíncronas a la base de datos (obtener config, etc.)
+aiomysql
+
+# Para leer el stream del binary log de MariaDB/MySQL
+mysql-replication
+
+# PyMySQL es una dependencia de aiomysql, pero es buena práctica listarla explícitamente.
+PyMySQL
+
+# Para realizar las llamadas al API central de forma asíncrona
+aiohttp

@@ -1,0 +1,70 @@
+Contexto Arquitectónico: Proyecto "Orquestador V&S" (Fase 1: Sincronización)
+1. El Problema Actual (Sistema Legacy)
+El sistema actual es un "Servicio de Comunicaciones" monolítico desarrollado en Delphi para Windows. Gestiona la replicación de bases de datos MariaDB entre 30 sucursales y la Administración Central.
+Fallas del sistema actual:
+
+Falsa Concurrencia: Utiliza decenas de componentes TTimer en un solo hilo. Esto genera bloqueos I/O (ej. si la red se ralentiza, todo el hilo se bloquea y la replicación de ventas de todas las sucursales se detiene).
+
+Consumo de Recursos: El Context Switching de Windows para manejar tantos timers ahoga la CPU y la RAM.
+
+Replicación Frágil: Lee los binlogs ejecutando SHOW BINLOG EVENTS y parsea el texto con funciones de cadenas (PosEx, LeftStr), lo cual es propenso a errores ante cualquier cambio de sintaxis.
+
+2. La Solución: Nueva Arquitectura de Replicación (Scope Limitado)
+Se implementará una arquitectura descentralizada basada en Microservicios y Asincronismo utilizando Python, enfocada ESTRICTAMENTE en la capa de comunicación. El sistema consta de dos componentes:
+
+A. El Agente (Desplegado en cada Sucursal)
+Rol: Microservicio autónomo. Es un "Cartero" rápido y ciego.
+
+Entorno: Multiplataforma (Linux Fedora principalmente, o Windows usando IOCP).
+
+Autonomía: El Agente inserta directamente los datos replicados en la Base de Datos Central. No depende de que un panel central enrute la información.
+
+Patrón Interno: Implementa un patrón Productor-Consumidor con asyncio.Queue compuesto por 3 corrutinas simultáneas:
+
+Lector (Productor): Usa python-mysql-replication para actuar como esclavo de MariaDB local. Lee los binlogs en formato ROW a nivel binario y los arroja a la cola de memoria.
+
+Transmisor (Consumidor): Toma los eventos de la cola y los inserta en la BD Central o los envía vía HTTP al Panel. Implementa Exponential Backoff si la red falla.
+
+Escucha: Hace Long Polling o peticiones periódicas (Heartbeat) al Panel Central para informar su estado ("Estoy vivo") y preguntar por comandos remotos.
+
+B. El Panel (Orquestador en Administración Central)
+Rol: Torre de control, telemetría y encolador de comandos. NO procesa la lógica de facturas.
+
+Entorno: Windows Server.
+
+Stack: Python + FastAPI + Uvicorn.
+
+Funciones:
+
+Recibe los Heartbeats (latidos) y errores de los agentes.
+
+Permite al administrador ver el estado y enviar comandos indirectos que los agentes descargarán y ejecutarán localmente.
+
+⚠️ FUERA DE ALCANCE (Out of Scope)
+El sistema legacy (Delphi) actualmente maneja integraciones con terceros (Zafiro BI, subida FTP CloseUp, recálculo de precios PPP, DataView). Todas estas tareas secundarias quedan estrictamente fuera del alcance de este nuevo desarrollo en Python. El nuevo código NO DEBE incluir ninguna lógica referente a estas integraciones.
+
+3. Directrices para la Asistencia de IA (Reglas de Código)
+Actúa como un Arquitecto/Desarrollador Python Senior. Cuando te pida generar código para este proyecto, debes respetar rigurosamente estas reglas:
+
+Asincronismo Real: Usa asyncio. Evita a toda costa código bloqueante (I/O). Si una librería no es asíncrona (como python-mysql-replication), debes encapsularla usando asyncio.to_thread o un ThreadPoolExecutor para no bloquear el Event Loop.
+
+Eficiencia en Red: Para llamadas HTTP usa aiohttp. Implementa manejo de errores de red con reintentos controlados (Exponential Backoff).
+
+Calidad de Producción: * Usa logging en lugar de print().
+
+Incluye Type Hints (tipado estático de Python) en todas las funciones.
+
+Mantén el código completamente agnóstico de la lógica de negocio secundaria.
+
+(Fin del Contexto)
+
+INSTRUCCIÓN ACTUAL PARA LA IA:
+Teniendo en cuenta todo este contexto, quiero que me generes el esqueleto base (boilerplate) del archivo agente.py que correrá en las sucursales. Debe implementar el patrón Productor-Consumidor con asyncio.Queue y tener las 3 corrutinas principales:
+
+Lector de binlog (con mysql-replication encapsulado en un thread para no bloquear).
+
+Transmisor (con manejo de errores de red y backoff).
+
+Escucha (para el heartbeat y recepción de comandos).
+
+Escribe solo la estructura concurrente base bien comentada, con logs y type hints. No escribas lógica de negocio de tablas reales.
