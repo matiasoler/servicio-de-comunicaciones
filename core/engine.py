@@ -38,6 +38,9 @@ class ReplicationEngine:
         print(f"[{self.name}] Trabajador iniciado.")
         setattr(shared_state, self.state_key, "corriendo")
         
+        retry_delay = 5
+        max_retry_delay = 60
+        
         while self.running:
             try:
                 log_to_read = await self.get_start_pos_callback(self.source_pool, self.dest_pool)
@@ -63,12 +66,19 @@ class ReplicationEngine:
 
                 loop = asyncio.get_running_loop()
                 buffer = TransactionBuffer(max_blocks_per_batch=self.max_blocks_per_batch)
+                
+                # Si llegamos acá es porque conectamos bien, reseteamos el delay
+                retry_delay = 5
 
                 while self.running:
                     # Lectura asíncrona (el recepcionista esperando el paquete)
-                    binlogevent = await loop.run_in_executor(None, stream.fetchone)
+                    try:
+                        binlogevent = await loop.run_in_executor(None, stream.fetchone)
+                    except Exception as e_fetch:
+                        raise aiomysql.OperationalError(f"El stream se ha desconectado inesperadamente: {e_fetch}")
                     
                     if binlogevent is None:
+                        print(f"[{self.name}] El stream retornó None. Posible desconexión limpia del servidor.")
                         break
                     if not self.running:
                         break
@@ -94,22 +104,52 @@ class ReplicationEngine:
                                 print(f"[{self.name}] Lote aplicado OK. Nueva pos: {block.end_log_file}:{block.end_log_pos}")
                                 setattr(shared_state, f"last_{self.name}_sync", datetime.datetime.now().isoformat())
                             
-                            except Exception as e_apply:
-                                print(f"[{self.name}] Error aplicando lote: {e_apply}. Deteniendo stream para reintentar.")
+                            except aiomysql.OperationalError as net_err:
+                                print(f"[{self.name}] Error de RED (Desconexión) aplicando lote: {net_err}.")
                                 stream.close()
-                                buffer.clear() # Limpiamos el buffer por seguridad
+                                buffer.clear()
+                                raise net_err # Lo ataja el except exterior para hacer el backoff
+                            
+                            except aiomysql.IntegrityError as data_err:
+                                print(f"[{self.name}] ERROR CRÍTICO DE DATOS (Integridad/Clave Duplicada): {data_err}.")
+                                stream.close()
+                                self.running = False # Detenemos el motor, requiere intervención manual
+                                raise data_err
+                                
+                            except Exception as e_apply:
+                                print(f"[{self.name}] Error inesperado aplicando lote: {e_apply}. Deteniendo stream para reintentar.")
+                                stream.close()
+                                buffer.clear()
                                 raise e_apply 
 
                 stream.close()
 
+            except aiomysql.OperationalError as e:
+                error_msg = f"[{self.name}] Falla de RED detectada: {e}. Reintentando en {retry_delay} seg..."
+                print(error_msg)
+                shared_state.errors.append(error_msg)
+                setattr(shared_state, self.state_key, f"error red: reintento en {retry_delay}s")
+                await asyncio.sleep(retry_delay)
+                # Backoff exponencial: 5, 10, 20, 40, 60...
+                retry_delay = min(retry_delay * 2, max_retry_delay)
+                
+            except aiomysql.IntegrityError as e:
+                error_msg = f"[{self.name}] DETENIDO POR INCONSISTENCIA DE DATOS: {e}"
+                print(error_msg)
+                shared_state.errors.append(error_msg)
+                setattr(shared_state, self.state_key, f"DETENIDO: Inconsistencia (Intervención requerida)")
+                self.running = False
+                break
+                
             except Exception as e:
                 error_msg = f"[{self.name}] Error general: {e}"
                 print(error_msg)
                 shared_state.errors.append(error_msg)
                 setattr(shared_state, self.state_key, f"error: {e}")
-                await asyncio.sleep(30)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, max_retry_delay)
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(1)
 
     async def _apply_block_to_dest(self, block: TransactionBlock):
         """Ejecuta todos los eventos de un bloque dentro de una única transacción."""
@@ -158,8 +198,11 @@ class ReplicationEngine:
             except aiomysql.IntegrityError as e:
                 # Si un solo evento falla, deshacemos TODO el bloque (ROLLBACK)
                 await conn.rollback()
-                # TODO (Future Check): Consultar information_schema.KEY_COLUMN_USAGE
-                print(f"      [!] Error de Integridad (FK) en transacción: {e}. ROLLBACK ejecutado.")
+                print(f"      [!] Error de Integridad (FK/Duplicado) en transacción: {e}. ROLLBACK ejecutado.")
+                raise e
+            except aiomysql.OperationalError as e:
+                await conn.rollback()
+                print(f"      [!] Error de RED (Desconexión) en transacción: {e}. ROLLBACK ejecutado.")
                 raise e
             except Exception as e:
                 await conn.rollback()
